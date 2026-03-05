@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Node.js 底层架构交互式解析</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Chosen Palette: Warm Neutrals with Soft Teal (Libuv), Sky Blue (V8), and Amber Accents -->
+    <!-- Application Structure Plan: Linear narrative-driven SPA. 
+         New additions: Added 'Architecture' section at the very beginning to establish the foundation (V8, Libuv, Bindings) before diving into the Lifecycle and Event Loop.
+         Structure flows from Abstract (Architecture) -> Process (Lifecycle) -> Detail (Event Loop & Queues) -> Application (Simulator) -> Review (Summary). -->
+    <!-- Visualization & Content Choices: 
+         1. Architecture Layer Map -> Goal: Organize/Relationships -> HTML/CSS Grid with Hover interactions -> Cleanly displays the layered stack without SVG.
+         2. Flow Summary -> Goal: Inform -> UI Steps/Cards.
+         3. Event Loop Phases -> Goal: Organize/Explore -> Chart.js Doughnut.
+         4. Task Priorities -> Goal: Compare -> Chart.js Horizontal Bar.
+         5. Code Simulator -> Goal: Change/Process -> Interactive block with templates.
+         6. Core Rules Summary -> Goal: Inform/Consolidate -> Thematic text cards. -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f5f5f4; /* stone-100 */
+            color: #292524; /* stone-800 */
+        }
+
+        /* Strict Chart Container Styling */
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 400px;
+        }
+
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+
+        /* Simulator Animations */
+        @keyframes fadeInSlide {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pulseRed {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .log-entry {
+            animation: fadeInSlide 0.3s ease-out forwards;
+        }
+        .log-error {
+            animation: fadeInSlide 0.3s ease-out forwards, pulseRed 2s infinite;
+        }
+
+        /* Arch Map Transitions */
+        .arch-block {
+            transition: all 0.2s ease-in-out;
+            cursor: pointer;
+        }
+        .arch-block:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(245, 245, 244, 0.5);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #d6d3d1;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a8a29e;
+        }
+    </style>
+</head>
+<body class="antialiased selection:bg-teal-200 selection:text-teal-900">
+
+    <!-- Navigation -->
+    <nav class="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-stone-200 shadow-sm">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16 items-center">
+                <div class="text-xl font-bold text-teal-700">Node.js Internals</div>
+                <div class="hidden lg:flex space-x-6 text-sm font-semibold">
+                    <a href="#architecture" class="text-stone-600 hover:text-teal-600 transition-colors">分层架构</a>
+                    <a href="#lifecycle" class="text-stone-600 hover:text-teal-600 transition-colors">生命周期</a>
+                    <a href="#eventloop" class="text-stone-600 hover:text-teal-600 transition-colors">事件循环</a>
+                    <a href="#queues" class="text-stone-600 hover:text-teal-600 transition-colors">任务队列</a>
+                    <a href="#simulator" class="text-stone-600 hover:text-teal-600 transition-colors">实战模拟</a>
+                    <a href="#summary" class="text-teal-600 hover:text-teal-800 transition-colors border-b-2 border-teal-500">核心总结</a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="py-20 text-center px-4 bg-gradient-to-b from-stone-100 to-stone-200/50">
+        <h1 class="text-4xl md:text-5xl font-extrabold tracking-tight text-stone-900 mb-6">
+            Node.js 底层运行与事件循环全景解析
+        </h1>
+        <p class="max-w-2xl mx-auto text-lg text-stone-600 leading-relaxed">
+            深入探索 Node.js 的心脏。通过交互式可视化与多场景代码模拟，彻底掌握宏任务、微任务、V8与Libuv的协作。
+        </p>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-24 space-y-28 mt-12">
+
+        <!-- Section 0: Architecture Layer Map (NEW) -->
+        <section id="architecture" class="scroll-mt-24">
+            <div class="mb-10 text-center md:text-left">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4 flex items-center justify-center md:justify-start">
+                    <span class="w-8 h-8 rounded bg-teal-100 text-teal-600 flex items-center justify-center text-sm mr-3">0</span>
+                    Node.js 核心架构分层图
+                </h2>
+                <p class="text-stone-600 text-lg">
+                    Node.js 本质上是一个用 C++ 编写的宿主环境，它将 V8 引擎和 Libuv 结合在了一起。将鼠标悬停或点击下方的架构模块，查看它们的具体职责与协作关系。
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                
+                <!-- Architecture Diagram Built with HTML/CSS -->
+                <div class="lg:col-span-7 flex flex-col gap-3 p-6 bg-white rounded-2xl shadow-sm border border-stone-200 font-semibold text-center text-sm">
+                    
+                    <!-- Layer 1: Application -->
+                    <div class="arch-block bg-stone-100 text-stone-600 border border-stone-300 rounded-lg p-3" data-arch="app">
+                        用户应用程序代码 (User Application Code) 
+                        <span class="text-xs font-normal ml-2 block sm:inline">JavaScript</span>
+                    </div>
+
+                    <!-- Layer 2: Node Standard Lib -->
+                    <div class="arch-block bg-amber-50 text-amber-700 border border-amber-200 rounded-lg p-3" data-arch="stdlib">
+                        Node.js 标准库内置模块 (Standard Library)
+                        <span class="text-xs font-normal ml-2 block sm:inline">fs, http, path, crypto... (JavaScript)</span>
+                    </div>
+
+                    <!-- Layer 3: Bridge -->
+                    <div class="arch-block bg-stone-800 text-white rounded-lg p-3 shadow-md relative" data-arch="bindings">
+                        Node.js Bindings (核心桥梁)
+                        <span class="text-xs font-normal text-stone-400 ml-2 block sm:inline">C++ / Node API / N-API</span>
+                        <!-- Decorative connection dots -->
+                        <div class="absolute -bottom-3 left-1/4 w-1 h-3 bg-stone-400"></div>
+                        <div class="absolute -bottom-3 left-3/4 w-1 h-3 bg-stone-400"></div>
+                    </div>
+
+                    <!-- Layer 4: The Engines -->
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-1">
+                        <!-- V8 -->
+                        <div class="arch-block bg-sky-50 text-sky-800 border-2 border-sky-200 rounded-lg p-4 flex flex-col justify-center h-28" data-arch="v8">
+                            <span class="text-xl font-bold mb-1">V8 引擎</span>
+                            <span class="text-xs font-normal">解析与执行 JS 代码<br>堆栈内存分配</span>
+                        </div>
+                        
+                        <!-- Libuv -->
+                        <div class="arch-block bg-teal-50 text-teal-800 border-2 border-teal-200 rounded-lg p-4 flex flex-col justify-center h-28" data-arch="libuv">
+                            <span class="text-xl font-bold mb-1">Libuv 库</span>
+                            <span class="text-xs font-normal">事件循环 (Event Loop)<br>线程池 (Thread Pool) / 异步 I/O</span>
+                        </div>
+                    </div>
+
+                    <!-- Other Deps -->
+                    <div class="arch-block bg-stone-100 text-stone-500 border border-stone-200 rounded-lg p-2 text-xs" data-arch="deps">
+                        底层依赖: OpenSSL (加密), c-ares (DNS), zlib (压缩), http-parser... (C/C++)
+                    </div>
+
+                    <!-- Layer 5: OS -->
+                    <div class="arch-block bg-stone-200 text-stone-600 border border-stone-300 rounded-lg p-3 mt-1" data-arch="os">
+                        操作系统内核 (Operating System)
+                        <span class="text-xs font-normal ml-2 block sm:inline">epoll (Linux), kqueue (Mac), IOCP (Win)</span>
+                    </div>
+                </div>
+
+                <!-- Info Panel -->
+                <div class="lg:col-span-5 bg-stone-800 text-stone-300 p-6 rounded-2xl shadow-lg border border-stone-700 min-h-[350px] flex flex-col justify-center transition-all duration-300" id="archInfoPanel">
+                    <div class="text-center text-stone-500 animate-[fadeInSlide_0.3s_ease-out]">
+                        <div class="text-5xl mb-4">🔍</div>
+                        <p class="text-lg">请将鼠标悬停或点击左侧的架构模块，<br>查看详细的运作原理与关系。</p>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <!-- Section 1: Lifecycle -->
+        <section id="lifecycle" class="scroll-mt-24">
+            <div class="mb-10 text-center md:text-left">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4 flex items-center justify-center md:justify-start">
+                    <span class="w-8 h-8 rounded bg-teal-100 text-teal-600 flex items-center justify-center text-sm mr-3">1</span>
+                    核心执行生命周期
+                </h2>
+                <p class="text-stone-600 text-lg">
+                    了解了底层由谁构成后，我们来看执行流程。从启动进程到最终退出的宏观流程，核心思想是：所有的代码执行本质上都是同步的，异步只是任务的分发与回调的排队。
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-6 relative">
+                <div class="hidden md:block absolute top-1/2 left-0 w-full h-1 bg-teal-100 -z-10 transform -translate-y-1/2"></div>
+                
+                <div class="bg-white rounded-xl shadow-sm border border-stone-200 p-6 relative group hover:shadow-md transition-shadow">
+                    <div class="w-10 h-10 rounded-full bg-teal-500 text-white flex items-center justify-center font-bold text-lg mb-4 mx-auto md:mx-0 shadow-lg shadow-teal-500/30">1</div>
+                    <h3 class="font-bold text-lg mb-2 text-center md:text-left">1. 顶层同步代码</h3>
+                    <p class="text-sm text-stone-500 text-center md:text-left">主线程(V8)像复读机一样执行初始代码。遇到异步操作时（通过 Bindings 交给 Libuv）仅仅是“登记”，然后继续往下读。</p>
+                </div>
+                
+                <div class="bg-white rounded-xl shadow-sm border border-stone-200 p-6 relative group hover:shadow-md transition-shadow">
+                    <div class="w-10 h-10 rounded-full bg-amber-500 text-white flex items-center justify-center font-bold text-lg mb-4 mx-auto md:mx-0 shadow-lg shadow-amber-500/30">2</div>
+                    <h3 class="font-bold text-lg mb-2 text-center md:text-left">2. 首次清空微任务</h3>
+                    <p class="text-sm text-stone-500 text-center md:text-left">只要顶层代码包含 `Promise` 或 `nextTick`，在进入 Libuv 的事件循环之前，立刻强迫自己清空它们。</p>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-teal-500 ring-2 ring-teal-500/20 p-6 relative group hover:shadow-md transition-shadow">
+                    <div class="w-10 h-10 rounded-full bg-teal-600 text-white flex items-center justify-center font-bold text-lg mb-4 mx-auto md:mx-0 shadow-lg shadow-teal-600/30">3</div>
+                    <h3 class="font-bold text-lg mb-2 text-center md:text-left text-teal-800">3. 事件循环流转</h3>
+                    <p class="text-sm text-stone-500 text-center md:text-left">进入由 Libuv 维护的事件循环。拿出一个宏任务执行(交还给 V8)，**执行完瞬间立刻再次清空微任务**。</p>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-stone-200 p-6 relative group hover:shadow-md transition-shadow">
+                    <div class="w-10 h-10 rounded-full bg-stone-500 text-white flex items-center justify-center font-bold text-lg mb-4 mx-auto md:mx-0 shadow-lg shadow-stone-500/30">4</div>
+                    <h3 class="font-bold text-lg mb-2 text-center md:text-left">4. 休眠或退出</h3>
+                    <p class="text-sm text-stone-500 text-center md:text-left">如果所有队列清空，且没有等待的 I/O（如未关闭的 Server 端口），进程结束退出。</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 2: Event Loop -->
+        <section id="eventloop" class="scroll-mt-24 bg-white p-8 rounded-2xl shadow-sm border border-stone-100">
+            <div class="mb-8">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4 flex items-center">
+                    <span class="w-8 h-8 rounded bg-teal-100 text-teal-600 flex items-center justify-center text-sm mr-3">2</span>
+                    事件循环阶段 (Libuv 维护)
+                </h2>
+                <p class="text-stone-600 text-lg">
+                    宏任务并非杂乱无章，它们被 Libuv 严格分配在不同的阶段里。点击图表了解每个阶段负责处理什么类型的宏任务。
+                </p>
+            </div>
+
+            <div class="flex flex-col lg:flex-row items-center gap-12">
+                <div class="w-full lg:w-1/2">
+                    <div class="chart-container">
+                        <canvas id="eventLoopChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="w-full lg:w-1/2 bg-stone-50 p-6 rounded-xl border border-stone-200 min-h-[300px] flex flex-col justify-center transition-all duration-300" id="phaseDetailsCard">
+                    <div class="text-center text-stone-400">
+                        <div class="text-4xl mb-2">🖱️</div>
+                        <p>请点击左侧事件循环图表的相应区域，以显示阶段详情。</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 3: Queues & Priority -->
+        <section id="queues" class="scroll-mt-24">
+            <div class="mb-10 text-center md:text-left">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4 flex items-center justify-center md:justify-start">
+                    <span class="w-8 h-8 rounded bg-teal-100 text-teal-600 flex items-center justify-center text-sm mr-3">3</span>
+                    任务队列对照表与优先级
+                </h2>
+                <p class="text-stone-600 text-lg">
+                    微任务由 V8 引擎插缝执行，宏任务由 Libuv 按轮次排队。
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-start">
+                <div class="bg-white p-6 rounded-2xl shadow-sm border border-stone-100">
+                    <h3 class="text-xl font-bold text-stone-800 mb-4 border-b border-stone-100 pb-2">相对优先级得分图</h3>
+                    <div class="chart-container">
+                        <canvas id="priorityChart"></canvas>
+                    </div>
+                </div>
+
+                <div class="space-y-4">
+                    <!-- Microtasks -->
+                    <div class="bg-amber-50 border border-amber-200 p-5 rounded-xl">
+                        <h4 class="font-bold text-amber-800 flex items-center mb-3 text-lg">
+                            <span class="text-2xl mr-2">⚡</span> 微任务 (Microtasks)
+                        </h4>
+                        <div class="text-xs font-bold text-amber-600 mb-2 uppercase tracking-wide">由 V8 引擎维护，优先级最高</div>
+                        <ul class="space-y-3 text-sm text-amber-900">
+                            <li class="flex items-start">
+                                <span class="bg-amber-200 text-amber-800 px-2 py-0.5 rounded text-xs mr-2 mt-0.5">VIP</span>
+                                <div><strong>process.nextTick()</strong> <br> Node 环境特有，在当前操作完成后立刻执行，排在所有微任务最前面。</div>
+                            </li>
+                            <li class="flex items-start">
+                                <span class="bg-amber-200 text-amber-800 px-2 py-0.5 rounded text-xs mr-2 mt-0.5">高优</span>
+                                <div><strong>Promise.then/catch/finally</strong> <br> 紧随 nextTick 之后执行。</div>
+                            </li>
+                        </ul>
+                    </div>
+
+                    <!-- Macrotasks -->
+                    <div class="bg-teal-50 border border-teal-200 p-5 rounded-xl">
+                        <h4 class="font-bold text-teal-800 flex items-center mb-3 text-lg">
+                            <span class="text-2xl mr-2">📦</span> 宏任务 (Macrotasks)
+                        </h4>
+                        <div class="text-xs font-bold text-teal-600 mb-2 uppercase tracking-wide">由 Libuv 维护，按事件循环阶段排队</div>
+                        <ul class="space-y-3 text-sm text-teal-900">
+                            <li class="flex items-start">
+                                <span class="bg-teal-200 text-teal-800 px-2 py-0.5 rounded text-xs mr-2 mt-0.5">Timers</span>
+                                <div><strong>setTimeout / setInterval</strong></div>
+                            </li>
+                            <li class="flex items-start">
+                                <span class="bg-teal-200 text-teal-800 px-2 py-0.5 rounded text-xs mr-2 mt-0.5">Poll</span>
+                                <div><strong>I/O 回调</strong> (fs读写, 数据库, 网络请求)</div>
+                            </li>
+                            <li class="flex items-start">
+                                <span class="bg-teal-200 text-teal-800 px-2 py-0.5 rounded text-xs mr-2 mt-0.5">Check</span>
+                                <div><strong>setImmediate()</strong></div>
+                            </li>
+                            <li class="flex items-start">
+                                <span class="bg-teal-200 text-teal-800 px-2 py-0.5 rounded text-xs mr-2 mt-0.5">Close</span>
+                                <div><strong>socket.on('close')</strong> 等清理任务</div>
+                            </li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 4: Simulator (Enhanced with Templates) -->
+        <section id="simulator" class="scroll-mt-24 bg-stone-900 rounded-2xl p-6 md:p-8 shadow-xl overflow-hidden relative">
+            <div class="absolute top-0 right-0 -mr-20 -mt-20 w-64 h-64 rounded-full bg-teal-500/10 blur-3xl"></div>
+            
+            <div class="mb-6 relative z-10">
+                <h2 class="text-3xl font-bold text-white mb-4 flex items-center">
+                    <span class="w-8 h-8 rounded bg-teal-500 text-stone-900 flex items-center justify-center text-sm mr-3">4</span>
+                    实战推演模拟器 (多场景)
+                </h2>
+                <p class="text-stone-300">
+                    选择不同的代码模板，直观观察 JS (V8) 和 事件循环 (Libuv) 交替处理任务的顺序，特别是致命的“微任务卡死”场景。
+                </p>
+                
+                <!-- Template Selector -->
+                <div class="flex flex-wrap gap-3 mt-6">
+                    <button class="tpl-btn active px-4 py-2 rounded-full text-sm font-semibold transition-colors bg-teal-600 text-white shadow-lg" data-template="basic">入门基础模板</button>
+                    <button class="tpl-btn px-4 py-2 rounded-full text-sm font-semibold transition-colors bg-stone-800 text-stone-300 hover:bg-stone-700 hover:text-white" data-template="complex">综合穿插实战</button>
+                    <button class="tpl-btn px-4 py-2 rounded-full text-sm font-semibold transition-colors bg-stone-800 text-stone-300 hover:bg-rose-900 hover:text-white border border-transparent hover:border-rose-700" data-template="starvation">🚨 模拟微任务饥饿</button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 relative z-10">
+                <!-- Code Display -->
+                <div class="bg-stone-950 rounded-xl border border-stone-800 overflow-hidden flex flex-col">
+                    <div class="bg-stone-800/50 px-4 py-2 text-xs text-stone-400 font-mono border-b border-stone-800 flex justify-between items-center">
+                        <span id="codeFileName">basic.js</span>
+                    </div>
+                    <div class="p-4 overflow-x-auto text-sm font-mono leading-relaxed text-stone-300 h-[300px]" id="codeDisplay">
+                        <!-- Injected via JS -->
+                    </div>
+                </div>
+
+                <!-- Execution Output -->
+                <div class="flex flex-col">
+                    <div class="flex justify-between items-end mb-3">
+                        <h3 class="text-white font-bold text-sm text-stone-400">控制台执行结果</h3>
+                        <button id="runSimBtn" class="bg-teal-600 hover:bg-teal-500 text-white px-5 py-2 rounded-lg font-semibold text-sm transition-colors shadow-lg shadow-teal-900/50 focus:outline-none focus:ring-2 focus:ring-teal-400">
+                            ▶️ 运行代码
+                        </button>
+                    </div>
+                    <div class="bg-stone-950 rounded-xl border border-stone-800 flex-grow p-4 overflow-y-auto h-[300px] font-mono text-sm relative" id="consoleOutput">
+                        <div class="absolute inset-0 flex items-center justify-center text-stone-600" id="consolePlaceholder">
+                            点击上方运行按钮...
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 5: Summary -->
+        <section id="summary" class="scroll-mt-24 pb-12">
+            <div class="mb-10 text-center">
+                <h2 class="text-3xl font-bold text-stone-800 mb-4 inline-flex items-center">
+                    <span class="text-3xl mr-3">📖</span>
+                    知识速查：底层运转三大铁律
+                </h2>
+                <p class="text-stone-600 text-lg max-w-3xl mx-auto">
+                    基于我们深入的探讨，这里为您提炼了最核心的架构理念与比喻，便于随时回顾。
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <!-- Sync -->
+                <div class="bg-white p-8 rounded-2xl shadow-sm border-t-4 border-stone-800 h-full">
+                    <h3 class="text-xl font-bold text-stone-900 mb-4">铁律一：同步本质</h3>
+                    <p class="text-stone-600 text-sm leading-relaxed mb-4">
+                        V8 主线程永远只在执行当前的“同步代码”。不管是顶层逻辑还是 `setTimeout` 里的回调，在拿到 V8 执行的那一刻，它都是同步阻塞的。
+                    </p>
+                    <p class="text-stone-600 text-sm leading-relaxed">
+                        所谓的“异步不会阻塞”，仅仅是因为遇到 I/O 时，它通过 Bindings 登记一下，把耗时任务丢给底层 Libuv 甚至 OS 去做了，主线程立即去读下一行。
+                    </p>
+                </div>
+
+                <!-- Cleaner Metaphor -->
+                <div class="bg-teal-50 p-8 rounded-2xl shadow-sm border-t-4 border-teal-600 h-full relative overflow-hidden">
+                    <div class="absolute -right-4 -bottom-4 text-6xl opacity-10">🧹</div>
+                    <h3 class="text-xl font-bold text-teal-900 mb-4">铁律二：房间与走廊</h3>
+                    <p class="text-teal-800 text-sm leading-relaxed mb-4">
+                        <strong>清洁工隐喻：</strong>Node 像一个疯狂的清洁工。宏任务（Libuv分发）是“大房间”，微任务（V8维护）是房间外的“走廊”。
+                    </p>
+                    <p class="text-teal-800 text-sm leading-relaxed">
+                        每打扫完一个大房间，他必定去走廊检查。只要走廊有垃圾（微任务），他就**一直扫直到彻底干净**，然后才进入下一个大房间（下一个宏任务阶段）。
+                    </p>
+                </div>
+
+                <!-- Starvation -->
+                <div class="bg-rose-50 p-8 rounded-2xl shadow-sm border-t-4 border-rose-600 h-full">
+                    <h3 class="text-xl font-bold text-rose-900 mb-4">铁律三：微任务饥饿</h3>
+                    <p class="text-rose-800 text-sm leading-relaxed mb-4">
+                        如果一直有微任务产生（例如在 `nextTick` 或 `Promise.then` 里递归调用自身），V8 主线程就会困在“清扫走廊”的过程中永远出不来。
+                    </p>
+                    <p class="text-rose-800 text-sm leading-relaxed">
+                        这会导致底层事件循环（Libuv）完全被卡死，后续排队的宏任务（网络请求、定时器等）**永远不会被执行**，应用假死。
+                    </p>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <footer class="bg-stone-900 text-stone-400 py-10 text-center text-sm">
+        <div class="max-w-6xl mx-auto px-4">
+            <p class="mb-2 text-stone-300 font-semibold">Node.js 架构交互式参考指南</p>
+            <p>基于事件驱动的非阻塞 I/O 模型提炼与总结。设计用于快速复习 V8 与 Libuv 的协作机制。</p>
+        </div>
+    </footer>
+
+    <!-- Application Logic -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            
+            // --- 0. Architecture Map Logic ---
+            const archData = {
+                app: {
+                    title: "用户应用代码层",
+                    color: "text-stone-300",
+                    border: "border-stone-500",
+                    content: "你编写的业务逻辑代码（JavaScript）。无论是创建服务器还是读写文件，一切的发起点都在这里。它运行在 V8 引擎之上。"
+                },
+                stdlib: {
+                    title: "Node.js 内置核心模块",
+                    color: "text-amber-400",
+                    border: "border-amber-500",
+                    content: "Node.js 提供的一组纯 JavaScript 封装的 API（如 <code>fs</code>, <code>http</code>, <code>crypto</code>, <code>path</code> 等）。它们为开发者屏蔽了底层的 C++ 复杂性，提供友好的开发接口。"
+                },
+                bindings: {
+                    title: "Node.js Bindings (C++)",
+                    color: "text-white",
+                    border: "border-stone-400",
+                    content: "<strong>核心桥梁枢纽！</strong> JS 无法直接调用操作系统接口。Bindings 是一系列用 C++ 写的胶水代码，它将 JS 层的调用转换为 C/C++ 层的调用，并将 V8 引擎与底层 Libuv 库紧密连接在一起。"
+                },
+                v8: {
+                    title: "Google V8 引擎",
+                    color: "text-sky-400",
+                    border: "border-sky-500",
+                    content: "<strong>解析与执行核心：</strong><br>1. 将 JS 代码编译成机器码并执行。<br>2. 维护 Call Stack（调用栈）。<br>3. 负责堆内存（Heap）的分配与垃圾回收（GC）。<br>4. <strong>管理微任务队列</strong>（如 Promise）。"
+                },
+                libuv: {
+                    title: "Libuv (异步 I/O 库)",
+                    color: "text-teal-400",
+                    border: "border-teal-500",
+                    content: "<strong>Node.js 异步的心脏（C语言编写）：</strong><br>1. 实现并维护跨平台的 <strong>事件循环 (Event Loop)</strong>。<br>2. 维护 <strong>工作线程池 (Thread Pool)</strong>：对于无法通过操作系统原生异步 API 实现的操作（如文件 fs 系统、DNS、Crypto等），Libuv 会将它们抛给线程池多线程处理。<br>3. 统一封装了各个操作系统的异步非阻塞特性。"
+                },
+                deps: {
+                    title: "底层 C/C++ 依赖库",
+                    color: "text-stone-400",
+                    border: "border-stone-600",
+                    content: "除了 V8 和 Libuv，Node.js 还集成了许多优秀的底层库来实现特定功能。例如：<code>OpenSSL</code> 负责加密通信，<code>c-ares</code> 负责异步 DNS 查询，<code>zlib</code> 负责压缩，<code>llhttp</code> 负责解析 HTTP 协议。"
+                },
+                os: {
+                    title: "操作系统 (OS)",
+                    color: "text-stone-400",
+                    border: "border-stone-600",
+                    content: "最底层。Linux 的 <code>epoll</code>，macOS 的 <code>kqueue</code>，Windows 的 <code>IOCP</code>。Libuv 会根据当前运行的操作系统，自动选择最高效的网络与 I/O 多路复用接口。"
+                }
+            };
+
+            const archPanel = document.getElementById('archInfoPanel');
+            const archBlocks = document.querySelectorAll('.arch-block');
+
+            archBlocks.forEach(block => {
+                const handler = () => {
+                    const key = block.dataset.arch;
+                    const data = archData[key];
+                    if(!data) return;
+
+                    // Remove active style from all
+                    archBlocks.forEach(b => b.classList.remove('ring-2', 'ring-offset-2', 'ring-teal-500'));
+                    // Add active style to current
+                    block.classList.add('ring-2', 'ring-offset-2', 'ring-teal-500');
+
+                    archPanel.innerHTML = `
+                        <div class="animate-[fadeInSlide_0.2s_ease-out]">
+                            <h3 class="text-2xl font-bold ${data.color} mb-4 pb-3 border-b border-stone-700/50">${data.title}</h3>
+                            <p class="text-stone-300 leading-relaxed text-sm md:text-base">${data.content}</p>
+                        </div>
+                    `;
+                };
+                block.addEventListener('mouseover', handler);
+                block.addEventListener('click', handler); // For mobile
+            });
+
+
+            // --- 1. Event Loop Doughnut Chart ---
+            const ctxEventLoop = document.getElementById('eventLoopChart').getContext('2d');
+            const phaseData = {
+                0: { title: "Timers 阶段 (定时器)", desc: "事件循环起点。执行到期的 setTimeout() 和 setInterval() 回调。", type: "宏任务队列" },
+                1: { title: "Pending Callbacks", desc: "处理系统级别的回调，如推迟处理的 TCP 错误。", type: "宏任务队列" },
+                2: { title: "Poll 阶段 (核心)", desc: "计算轮询时间，处理 fs 读写、http 请求等 I/O 回调。若队列空可能在此阻塞。", type: "宏任务队列" },
+                3: { title: "Check 阶段", desc: "专为 setImmediate() 设立。Poll 阶段闲置时直接进入此阶段。", type: "宏任务队列" },
+                4: { title: "Close Callbacks", desc: "执行清理任务，如 socket.on('close')。", type: "宏任务队列" }
+            };
+
+            new Chart(ctxEventLoop, {
+                type: 'doughnut',
+                data: {
+                    labels: ['1. Timers', '2. Pending', '3. Poll', '4. Check', '5. Close'],
+                    datasets: [{
+                        data: [20, 15, 30, 20, 15],
+                        backgroundColor: [
+                            'rgba(245, 158, 11, 0.8)', 'rgba(168, 162, 158, 0.8)', 
+                            'rgba(20, 184, 166, 0.9)', 'rgba(56, 189, 248, 0.8)', 'rgba(244, 63, 94, 0.8)'
+                        ],
+                        borderColor: '#ffffff',
+                        borderWidth: 2,
+                        hoverOffset: 10
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '65%',
+                    plugins: { legend: { position: 'right' } },
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) updatePhaseDetails(elements[0].index);
+                    }
+                }
+            });
+
+            function updatePhaseDetails(index) {
+                const card = document.getElementById('phaseDetailsCard');
+                const data = phaseData[index];
+                const colors = ['text-amber-600', 'text-stone-600', 'text-teal-600', 'text-sky-600', 'text-rose-600'];
+                card.innerHTML = `
+                    <div class="animate-[fadeInSlide_0.3s_ease-out]">
+                        <span class="inline-block px-3 py-1 rounded-full bg-stone-200 text-stone-700 text-xs font-bold mb-3">${data.type}</span>
+                        <h3 class="text-2xl font-bold ${colors[index]} mb-3">${data.title}</h3>
+                        <p class="text-stone-700 leading-relaxed">${data.desc}</p>
+                        <div class="mt-4 pt-4 border-t border-stone-200 text-sm text-stone-500 font-semibold">
+                            💡 提示：在此阶段结束后，必定先清空微任务，再进入下一阶段。
+                        </div>
+                    </div>
+                `;
+            }
+
+            // --- 2. Priority Chart ---
+            new Chart(document.getElementById('priorityChart').getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: ['nextTick (V8)', 'Promise (V8)', '同步主代码 (V8)', 'Timers (Libuv)', 'Poll I/O (Libuv)', 'Check (Libuv)'],
+                    datasets: [{
+                        data: [100, 90, 80, 60, 50, 40],
+                        backgroundColor: [
+                            'rgba(245, 158, 11, 0.9)', 'rgba(252, 211, 77, 0.8)', 'rgba(120, 113, 108, 0.8)',
+                            'rgba(20, 184, 166, 0.8)', 'rgba(13, 148, 136, 0.8)', 'rgba(15, 118, 110, 0.8)'
+                        ],
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { x: { display: false, max: 110 }, y: { grid: { display: false } } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            // --- 3. Enhanced Simulator Logic ---
+            const templates = {
+                basic: {
+                    name: "basic_demo.js",
+                    code: `<span class="text-teal-400">setTimeout</span>(() => console.log(<span class="text-amber-300">'Timeout'</span>), <span class="text-purple-400">0</span>);
+
+<span class="text-yellow-400">Promise</span>.resolve().then(() => console.log(<span class="text-amber-300">'Promise'</span>));
+
+console.log(<span class="text-amber-300">'Start'</span>);`,
+                    steps: [
+                        { log: "Start", type: "sync", exp: "1. V8 主线程按行执行同步代码。通过 Bindings 向 Libuv 登记了 Timer，并在 V8 自己内部登记了 Promise 微任务。" },
+                        { log: "Promise", type: "micro", exp: "2. 同步代码(宏任务)结束，V8 强制清理当前产生的微任务。执行 Promise。" },
+                        { log: "Timeout", type: "macro", exp: "3. V8 移交控制权，Libuv 开始事件循环的 Timers 阶段。执行超时回调。" }
+                    ]
+                },
+                complex: {
+                    name: "complex_flow.js",
+                    code: `<span class="text-teal-400">setTimeout</span>(() => console.log(<span class="text-amber-300">'Timeout'</span>), <span class="text-purple-400">0</span>);
+
+<span class="text-teal-400">setImmediate</span>(() => console.log(<span class="text-amber-300">'Immediate'</span>));
+
+<span class="text-yellow-400">Promise</span>.resolve().then(() => console.log(<span class="text-amber-300">'Promise'</span>));
+
+<span class="text-blue-400">process</span>.nextTick(() => console.log(<span class="text-amber-300">'NextTick'</span>));
+
+console.log(<span class="text-amber-300">'Start'</span>);`,
+                    steps: [
+                        { log: "Start", type: "sync", exp: "1. 同步执行完毕。准备离开主逻辑前，先看微任务队列。" },
+                        { log: "NextTick", type: "micro", exp: "2. 清空微任务：VIP级别的 nextTick 优先。" },
+                        { log: "Promise", type: "micro", exp: "3. 继续清空微任务：执行 Promise。" },
+                        { log: "Timeout", type: "macro", exp: "4. 进入 Libuv 循环，Timers阶段：执行 setTimeout。" },
+                        { log: "Immediate", type: "macro", exp: "5. 跳过空闲的 Poll 阶段，进入 Check阶段：执行 setImmediate。" }
+                    ]
+                },
+                starvation: {
+                    name: "starvation_danger.js",
+                    code: `<span class="text-teal-400">setTimeout</span>(() => console.log(<span class="text-amber-300">'Timeout - 永远无法执行'</span>), <span class="text-purple-400">0</span>);
+
+<span class="text-stone-400 italic">// 递归产生微任务</span>
+<span class="text-pink-400">function</span> <span class="text-blue-300">starve</span>() {
+    <span class="text-blue-400">process</span>.nextTick(starve); 
+}
+
+starve(); <span class="text-stone-500">// 触发黑洞</span>
+
+console.log(<span class="text-amber-300">'Start'</span>);`,
+                    steps: [
+                        { log: "Start", type: "sync", exp: "1. V8 同步执行，向 Libuv 注册了定时器，并在自身触发了微任务死循环。" },
+                        { log: "starve() tick 1", type: "micro", exp: "2. V8 执行微任务，但在内部又产生了一个新的微任务排在后面。" },
+                        { log: "starve() tick 2", type: "micro", exp: "3. 继续扫微任务走廊，又发现了新任务..." },
+                        { log: "starve() tick 3", type: "micro", exp: "4. 无限套娃中，主线程被完全锁死..." },
+                        { log: "🚨 I/O Starvation", type: "error", exp: "致命错误：V8 被困在微任务清理中无法脱身。控制权永远无法交还给 Libuv。事件循环卡死，网络请求、Timer等宏任务全部饿死！" }
+                    ]
+                }
+            };
+
+            let currentTemplate = 'basic';
+            const codeDisplay = document.getElementById('codeDisplay');
+            const codeFileName = document.getElementById('codeFileName');
+            const outputArea = document.getElementById('consoleOutput');
+            const placeholder = document.getElementById('consolePlaceholder');
+            const runBtn = document.getElementById('runSimBtn');
+            const tplBtns = document.querySelectorAll('.tpl-btn');
+            let isRunning = false;
+
+            // Initialize Template
+            function loadTemplate(key) {
+                if(isRunning) return;
+                currentTemplate = key;
+                codeFileName.textContent = templates[key].name;
+                codeDisplay.innerHTML = `<pre><code>${templates[key].code}</code></pre>`;
+                
+                // Reset UI
+                tplBtns.forEach(btn => {
+                    btn.classList.remove('bg-teal-600', 'text-white', 'shadow-lg');
+                    btn.classList.add('bg-stone-800', 'text-stone-300');
+                    if(btn.dataset.template === key) {
+                        btn.classList.remove('bg-stone-800', 'text-stone-300');
+                        btn.classList.add('bg-teal-600', 'text-white', 'shadow-lg');
+                    }
+                });
+                outputArea.innerHTML = '';
+                outputArea.appendChild(placeholder);
+                placeholder.style.display = 'flex';
+                placeholder.textContent = '点击上方运行按钮...';
+            }
+
+            // Bind Template Buttons
+            tplBtns.forEach(btn => {
+                btn.addEventListener('click', (e) => loadTemplate(e.target.dataset.template));
+            });
+
+            // Run Simulation
+            runBtn.addEventListener('click', () => {
+                if (isRunning) return;
+                isRunning = true;
+                runBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                runBtn.textContent = '执行中...';
+                
+                if (placeholder) placeholder.style.display = 'none';
+                outputArea.innerHTML = '';
+
+                let stepIndex = 0;
+                const steps = templates[currentTemplate].steps;
+
+                const runNextStep = () => {
+                    if (stepIndex >= steps.length) {
+                        isRunning = false;
+                        runBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                        runBtn.textContent = '▶️ 重新运行';
+                        return;
+                    }
+
+                    const step = steps[stepIndex];
+                    const entry = document.createElement('div');
+                    entry.className = 'mb-3 p-3 rounded border flex flex-col gap-1';
+                    
+                    if (step.type === 'sync') {
+                        entry.classList.add('log-entry', 'bg-stone-800/50', 'border-stone-700');
+                        entry.innerHTML = `<div class="text-stone-300 font-bold">> console.log('${step.log}')</div>`;
+                    } else if (step.type === 'micro') {
+                        entry.classList.add('log-entry', 'bg-amber-900/30', 'border-amber-700/50', 'border-l-4', 'border-l-amber-500');
+                        entry.innerHTML = `<div class="text-amber-200 font-bold">> ⚡ ${step.log}</div>`;
+                    } else if (step.type === 'macro') {
+                        entry.classList.add('log-entry', 'bg-teal-900/30', 'border-teal-700/50', 'border-l-4', 'border-l-teal-500');
+                        entry.innerHTML = `<div class="text-teal-200 font-bold">> 📦 ${step.log}</div>`;
+                    } else if (step.type === 'error') {
+                        entry.classList.add('log-error', 'bg-rose-900/40', 'border-rose-500', 'border-l-4');
+                        entry.innerHTML = `<div class="text-rose-400 font-bold">> ${step.log}</div>`;
+                    }
+
+                    entry.innerHTML += `<div class="text-stone-400 text-xs mt-1 pt-1 ${step.type === 'error' ? 'text-rose-300' : 'border-t border-stone-700/50'}">${step.exp}</div>`;
+
+                    outputArea.appendChild(entry);
+                    outputArea.scrollTop = outputArea.scrollHeight;
+
+                    stepIndex++;
+                    setTimeout(runNextStep, step.type === 'error' ? 0 : 1200); // Stop after error, else wait
+                };
+
+                runNextStep();
+            });
+
+            // Initial load
+            loadTemplate('basic');
+        });
+    </script>
+</body>
+</html>
